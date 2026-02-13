@@ -3,10 +3,8 @@ import fetch from "node-fetch";
 import pdf from "pdf-parse";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-
-// IMPORTANT: transport name varies by SDK version.
-// If you get an import error here, tell me the exact error text and I’ll adjust.
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 
 const SET_MENU_URL = process.env.SET_MENU_URL;
 const API_KEY = process.env.API_KEY; // optional
@@ -40,7 +38,7 @@ mcp.tool(
   async () => {
     const text = await loadPdfText(SET_MENU_URL);
     return {
-      content: [{ type: "text", text }]
+      content: [{ type: "text", text }],
     };
   }
 );
@@ -52,17 +50,49 @@ mcp.tool(
     const text = await loadPdfText(SET_MENU_URL);
 
     // Simple relevance: return the whole text for now (we can optimize to chunking later)
-    // Keeping it simple helps you confirm MCP works end-to-end.
     return {
-      content: [{ type: "text", text: `Question: ${question}\n\nMenu:\n${text}` }]
+      content: [{ type: "text", text: `Question: ${question}\n\nMenu:\n${text}` }],
     };
   }
 );
 
+// ----------------------
 // MCP over HTTP endpoint
+// ----------------------
 app.post("/mcp", auth, async (req, res) => {
   const transport = new StreamableHTTPServerTransport(req, res);
   await mcp.connect(transport);
+});
+
+// ----------------------
+// MCP over SSE endpoints
+// ----------------------
+// ChatAgent should point its SSE MCP "Endpoint" to: https://YOUR_DOMAIN/sse
+app.get("/sse", auth, async (req, res) => {
+  // Client will POST messages to /messages
+  const transport = new SSEServerTransport("/messages", res);
+  await mcp.connect(transport);
+});
+
+// The exact handler name can vary by MCP SDK version.
+// This implementation tries the common patterns.
+app.post("/messages", auth, express.json({ limit: "2mb" }), async (req, res) => {
+  try {
+    if (typeof SSEServerTransport.handlePostMessage === "function") {
+      return await SSEServerTransport.handlePostMessage(req, res);
+    }
+    // Some versions expose handleRequest instead
+    if (typeof SSEServerTransport.handleRequest === "function") {
+      return await SSEServerTransport.handleRequest(req, res);
+    }
+
+    return res.status(500).json({
+      error:
+        "SSEServerTransport handler not found. Please share the Railway log error and @modelcontextprotocol/sdk version.",
+    });
+  } catch (e) {
+    return res.status(500).json({ error: String(e?.message || e) });
+  }
 });
 
 app.get("/health", (req, res) => res.json({ ok: true }));
